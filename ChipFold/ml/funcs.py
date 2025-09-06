@@ -158,13 +158,14 @@ def train_ctcf_model(
     epochs=20,
     lr=1e-3,
     device=None,
-    use_kldiv=False
+    use_kldiv=False,
+    label_cols=['Accessible','Bound','Nucleosome.occupied']
 ):
     if device is None:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # ---- Load dataset ----
-    dataset = CTCFOccupancyDataset(bedfile_path,ctcfpfm = ctcfpfm)
+    dataset = CTCFOccupancyDataset(bedfile_path,ctcfpfm = ctcfpfm, label_cols=label_cols)
     num_classes = dataset[0][1].shape[0]
     seq_len = dataset.seq_len
 
