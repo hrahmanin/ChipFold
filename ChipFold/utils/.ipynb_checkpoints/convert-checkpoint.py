@@ -6,7 +6,7 @@ import numpy as np
 # Define utility functions
 
 # Function: Convert CTCF occupancy based on scores
-def convert_ctcf_occupancy(ctcf_bed_df, score_bed_path, max_occup=0.9, score='score_'):
+def convert_ctcf_occupancy(ctcf_bed_df, score_bed_path, max_occup=0.9, score='score_', method='linear', k=10, avpoint=0.5):
     """
     Convert CTCF occupancy from bed file scores.
 
@@ -22,12 +22,21 @@ def convert_ctcf_occupancy(ctcf_bed_df, score_bed_path, max_occup=0.9, score='sc
     Returns:
     - DataFrame: Updated DataFrame with occupancy values added.
     """
+    
     bed_file = bioframe.read_table(score_bed_path, schema='bed')
     dataframe_ctcf = bioframe.overlap(ctcf_bed_df, bed_file, how='inner')[
         ['chrom', 'start', 'end', 'strand', score]
     ]
+    
     max_score = dataframe_ctcf[score].max()
-    dataframe_ctcf['occupancy'] = (dataframe_ctcf[score] / max_score) * max_occup
+    
+    if max_score == 0 or np.isnan(max_score):
+        raise ValueError("Max score is zero/NaN; cannot normalize.")
+    s = dataframe_ctcf[score] / max_score
+    if method=='linear':
+        dataframe_ctcf['occupancy'] = s * max_occup
+    elif method = 'sigmoid':
+        occ = max_occup / (1.0 + np.exp(-k * (s - avpoint)))
     return dataframe_ctcf
 
 
