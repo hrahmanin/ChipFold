@@ -6,7 +6,7 @@ import numpy as np
 # Define utility functions
 
 # Function: Convert CTCF occupancy based on scores
-def convert_ctcf_occupancy(ctcf_bed_df, score_bed_path, max_occup=0.9):
+def convert_ctcf_occupancy(ctcf_bed_df, score_bed_path, max_occup=0.9, score='score_'):
     """
     Convert CTCF occupancy from bed file scores.
 
@@ -24,10 +24,10 @@ def convert_ctcf_occupancy(ctcf_bed_df, score_bed_path, max_occup=0.9):
     """
     bed_file = bioframe.read_table(score_bed_path, schema='bed')
     dataframe_ctcf = bioframe.overlap(ctcf_bed_df, bed_file, how='inner')[
-        ['chrom', 'start', 'end', 'strand', 'score_']
+        ['chrom', 'start', 'end', 'strand', score]
     ]
-    max_score = dataframe_ctcf['score_'].max()
-    dataframe_ctcf['occupancy'] = (dataframe_ctcf['score_'] / max_score) * max_occup
+    max_score = dataframe_ctcf[score].max()
+    dataframe_ctcf['occupancy'] = (dataframe_ctcf[score] / max_score) * max_occup
     return dataframe_ctcf
 
 
