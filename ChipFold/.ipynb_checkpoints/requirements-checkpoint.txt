@@ -1,0 +1,19 @@
+# ---- Core scientific stack ----
+numpy>=1.26
+pandas>=2.0
+matplotlib>=3.8
+h5py>=3.10
+networkx>=3.2
+
+# ---- Genomics + file I/O ----
+pysam>=0.22
+pyBigWig>=0.3.22
+bioframe>=0.4
+cooler>=0.9
+cooltools>=0.6.1
+
+# ---- Optional acceleration (kept compatible with Py3.11) ----
+numba<0.60
+
+# ---- (Optional) ML — only if you need it; comment out if not required ----
+# torch  # or pin a CPU build, e.g., torch==2.3.* (installed from PyTorch CPU index in the def file)

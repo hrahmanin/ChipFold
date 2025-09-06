@@ -1,0 +1,58 @@
+Bootstrap: docker
+From: python:3.11-slim
+
+%files
+  . /opt/occufold_src
+
+%post
+  set -eux
+  apt-get update && apt-get install -y --no-install-recommends \
+      build-essential git ca-certificates procps && \
+      rm -rf /var/lib/apt/lists/*
+
+  python -m pip install --upgrade pip setuptools wheel
+
+  # Pick the requirements file; install your deps
+  REQ=/opt/occufold_src/requirements.txt
+  [ -f "$REQ" ] || REQ=/opt/occufold_src/OccuFold/requirements.txt || true
+  if [ -f "$REQ" ]; then
+    python -m pip install --no-cache-dir --prefix=/usr/local -r "$REQ"
+  else
+    python -m pip install --no-cache-dir --prefix=/usr/local \
+      "numpy>=1.26" "pandas>=2.0" "bioframe>=0.4" "cooler>=0.9" "pysam>=0.22" "torch>=2.2,<3" "cooltools>=0.6.1"
+  fi
+
+  # Ensure plotting + cooltools stack (prefer wheels; pin numba for py3.11)
+  python -m pip install --no-cache-dir --prefix=/usr/local --only-binary=:all: \
+    "scipy>=1.10" "numba<0.60" "matplotlib>=3.8" "h5py>=3.10" "networkx>=3.2" \
+    "cooltools>=0.6.1" "pyBigWig>=0.3.22"
+
+  # If torch didn’t come from PyPI (some sites don’t host CPU wheels), fetch from PyTorch’s CPU index
+  python - <<'PY' || true
+import importlib; import sys
+sys.exit(0 if importlib.util.find_spec("torch") else 1)
+PY
+  [ $? -eq 0 ] || python -m pip install --no-cache-dir --prefix=/usr/local --index-url https://download.pytorch.org/whl/cpu torch
+
+# Sanity-check key imports; fail fast if any are missing
+python - <<'PY'
+import numpy, pandas, pysam, torch, cooltools, pyBigWig 
+print("PYBIGWIG_OK", pyBigWig.__version__)
+print("NUMPY_OK", numpy.__version__)
+print("PANDAS_OK", pandas.__version__)
+print("PYSAM_OK", pysam.__version__)
+print("TORCH_OK", torch.__version__, "CUDA:", torch.cuda.is_available())
+print("COOLTOOLS_OK", cooltools.__version__)
+PY
+
+  # Quiet Singularity bind warnings
+  mkdir -p /tmp /var/tmp /proc /etc
+  : > /etc/passwd; : > /etc/group; : > /etc/hosts; : > /etc/resolv.conf
+
+%environment
+  # Keep your dev-mode import path
+  export PYTHONPATH=/opt/occufold_src
+  export PATH=/opt/occufold_src/scripts:$PATH
+
+%runscript
+  exec "$@"
