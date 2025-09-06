@@ -24,7 +24,7 @@ def convert_ctcf_occupancy(ctcf_bed_df, score_bed_path, max_occup=0.9):
     """
     bed_file = bioframe.read_table(score_bed_path, schema='bed')
     dataframe_ctcf = bioframe.overlap(ctcf_bed_df, bed_file, how='inner')[
-        ['chrom', 'start', 'end', 'mid', 'strand', 'score_']
+        ['chrom', 'start', 'end', 'strand', 'score_']
     ]
     max_score = dataframe_ctcf['score_'].max()
     dataframe_ctcf['occupancy'] = (dataframe_ctcf['score_'] / max_score) * max_occup
