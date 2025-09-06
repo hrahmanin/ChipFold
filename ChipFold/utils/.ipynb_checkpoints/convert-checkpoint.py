@@ -36,7 +36,7 @@ def convert_ctcf_occupancy(ctcf_bed_df, score_bed_path, max_occup=0.9, score='sc
     if method=='linear':
         dataframe_ctcf['occupancy'] = s * max_occup
     elif method == 'sigmoid':
-        occ = max_occup / (1.0 + np.exp(-k * (s - avpoint)))
+        dataframe_ctcf['occupancy']= max_occup / (1.0 + np.exp(-k * (s - avpoint)))
     return dataframe_ctcf
 
 
