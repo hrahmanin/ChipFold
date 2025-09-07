@@ -127,11 +127,19 @@ def predict_ctcf_occupancy(
     ctcf_bed,
     ctcfpfm='data/MA0139.1.pfm',
     model_weights_path='data/model_weights.pt',
-    out_features=3,              # set to 1 for single-output models
+    out_features=3,               # set to 1 for single-output models
     pred_device=None,
-    class_names=None,            # optional names for multi-class columns
-    bound_index=1                # which class to also expose as a single "bound" prob
+    label_cols=None,              # << pass your labels here; we'll use 'predicted_<label>'
+    class_names=None,             # fallback names if label_cols not given
+    bound_index=1                 # optional: which class to expose as 'predicted_bound_prob'
 ):
+    """
+    Writes columns named 'predicted_<label>' for each output.
+    If out_features == 1:
+        uses label_cols[0] if provided, else 'occupancy' -> 'predicted_occupancy'
+    If out_features > 1:
+        uses label_cols (preferred) or class_names; falls back to 'predicted_class{i}'.
+    """
     if pred_device is None:
         pred_device = device
 
@@ -158,27 +166,36 @@ def predict_ctcf_occupancy(
         logits = best_model(seqs)
 
         if logits.shape[1] == 1:
-            # single-output: sigmoid
-            probs = torch.sigmoid(logits).squeeze(1).detach().cpu().numpy()  # (N,)
-            peaks_table['predicted_occupancy'] = probs
+            # single-output: sigmoid -> one column
+            probs = torch.sigmoid(logits).squeeze(1).detach().cpu().numpy()
+            base_name = (label_cols[0] if (label_cols and len(label_cols) == 1) else 'occupancy')
+            peaks_table[f'predicted_{base_name}'] = probs
+
         else:
-            # multi-class: softmax
-            probs = torch.softmax(logits, dim=1).detach().cpu().numpy()      # (N, C)
+            # multi-class: softmax -> one column per class
+            probs = torch.softmax(logits, dim=1).detach().cpu().numpy()
+            names = None
+            if label_cols and len(label_cols) == probs.shape[1]:
+                names = [f'predicted_{n}' for n in label_cols]
+            elif class_names and len(class_names) == probs.shape[1]:
+                names = [f'predicted_{n}' for n in class_names]
 
-            if class_names and len(class_names) == probs.shape[1]:
-                for i, name in enumerate(class_names):
-                    peaks_table[f'pred_{name}'] = probs[:, i]
-            else:
-                for i in range(probs.shape[1]):
-                    peaks_table[f'pred_class{i}'] = probs[:, i]
+            if names is None:
+                # final fallback
+                names = [f'predicted_class{i}' for i in range(probs.shape[1])]
 
-            bi = bound_index if bound_index < probs.shape[1] else 1
-            peaks_table['predicted_bound_prob'] = probs[:, bi]
+            for i, colname in enumerate(names):
+                peaks_table[colname] = probs[:, i]
+
+            # optional convenience column for "bound" if present
+            if probs.shape[1] > 1 and (bound_index < probs.shape[1]):
+                peaks_table['predicted_bound_prob'] = probs[:, bound_index]
 
     out_path = f'{ctcf_bed}_with_predicted_occupancy.csv'
     peaks_table.to_csv(out_path, index=False)
     print(f"✅ Saved predictions to {out_path}")
     return peaks_table
+
 
 
 # -------------------- dataset & train --------------------
