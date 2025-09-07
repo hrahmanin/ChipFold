@@ -87,7 +87,7 @@ def fetch_and_orient_from_fasta(
 ):
     # auto-detect CSV/TSV
     df = pd.read_csv(bedfile, sep=None, engine='python', comment='#')
-    peaks_table = df.iloc[:, :3].copy()  # expects first 3 cols: chrom, start, end
+    peaks_table = df.iloc[:, :3].copy()  # expects first 3 cols: chrom,start,end
     ref_genome = pysam.FastaFile(ref_genome_filepath)
 
     ctcf_pfm = np.loadtxt(ctcfpfm, skiprows=1)
@@ -128,17 +128,13 @@ def predict_ctcf_occupancy(
     ctcfpfm='data/MA0139.1.pfm',
     model_weights_path='data/model_weights.pt',
     out_features=3,               # set to 1 for single-output models
-    pred_device='cpu',
-    label_cols=None,              # << pass your labels here; we'll use 'predicted_<label>'
-    bound_index=1,                 # optional: which class to expose as 'predicted_bound_prob'
-    class_names=None,             # fallback names if label_cols not given
+    pred_device=None,
+    label_cols=None               # we will name outputs 'predicted_<label>'
 ):
     """
     Writes columns named 'predicted_<label>' for each output.
-    If out_features == 1:
-        uses label_cols[0] if provided, else 'occupancy' -> 'predicted_occupancy'
-    If out_features > 1:
-        uses label_cols (preferred) or class_names; falls back to 'predicted_class{i}'.
+    If out_features == 1: uses label_cols[0] if provided, else 'occupancy'.
+    If out_features > 1: uses label_cols; falls back to 'predicted_class{i}' if missing.
     """
     if pred_device is None:
         pred_device = device
@@ -149,6 +145,11 @@ def predict_ctcf_occupancy(
 
     # input table
     peaks_table = pd.read_csv(ctcf_bed, sep=None, engine='python', comment='#')
+
+    # infer label names from file if not provided
+    if label_cols is None:
+        candidate_cols = [c for c in peaks_table.columns if c not in ('chrom', 'start', 'end')]
+        label_cols = candidate_cols[:out_features] if len(candidate_cols) >= out_features else None
 
     # model
     best_model = CtcfOccupPredictor(
@@ -168,34 +169,24 @@ def predict_ctcf_occupancy(
         if logits.shape[1] == 1:
             # single-output: sigmoid -> one column
             probs = torch.sigmoid(logits).squeeze(1).detach().cpu().numpy()
-            base_name = (label_cols[0] if (label_cols and len(label_cols) == 1) else 'occupancy')
+            base_name = (label_cols[0] if (label_cols and len(label_cols) >= 1) else 'occupancy')
             peaks_table[f'predicted_{base_name}'] = probs
 
         else:
             # multi-class: softmax -> one column per class
             probs = torch.softmax(logits, dim=1).detach().cpu().numpy()
-            names = None
             if label_cols and len(label_cols) == probs.shape[1]:
                 names = [f'predicted_{n}' for n in label_cols]
-            elif class_names and len(class_names) == probs.shape[1]:
-                names = [f'predicted_{n}' for n in class_names]
-
-            if names is None:
-                # final fallback
+            else:
                 names = [f'predicted_class{i}' for i in range(probs.shape[1])]
 
             for i, colname in enumerate(names):
                 peaks_table[colname] = probs[:, i]
 
-            # optional convenience column for "bound" if present
-            if probs.shape[1] > 1 and (bound_index < probs.shape[1]):
-                peaks_table['predicted_bound_prob'] = probs[:, bound_index]
-
     out_path = f'{ctcf_bed}_with_predicted_occupancy.csv'
     peaks_table.to_csv(out_path, index=False)
     print(f"✅ Saved predictions to {out_path}")
     return peaks_table
-
 
 
 # -------------------- dataset & train --------------------
@@ -227,8 +218,18 @@ def train_ctcf_model(
     lr=1e-3,
     device_override=None,
     use_kldiv=False,
-    label_cols=['Accessible', 'Bound', 'Nucleosome.occupied']
+    label_cols=['Accessible', 'Bound', 'Nucleosome.occupied'],
+    # --- Early stopping options ---
+    early_stopping=True,
+    patience=5,
+    min_delta=0.0,         # improvement must be >= this to reset patience
+    restore_best=True
 ):
+    """
+    Trains the model. If single output (e.g., label_cols=['occupancy']), uses BCEWithLogitsLoss.
+    If multi-class, uses CrossEntropyLoss (or KLDiv if use_kldiv=True).
+    Early stopping monitors validation loss.
+    """
     dev = device_override or ('cuda' if torch.cuda.is_available() else 'cpu')
 
     # dataset
@@ -244,7 +245,8 @@ def train_ctcf_model(
     val_loader = DataLoader(val_set, batch_size=batch_size)
 
     # model
-    model = CtcfOccupPredictor(seq_len=seq_len, n_head=11, kernel_size=3, out_features=num_outputs).to(dev)
+    model = CtcfOccupPredictor(seq_len=seq_len, n_head=11, kernel_size=3,
+                               out_features=num_outputs).to(dev)
 
     # loss
     if num_outputs == 1:
@@ -254,8 +256,13 @@ def train_ctcf_model(
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    # train
+    # --- early stopping state ---
+    best_val = float('inf')
+    best_state = None
+    no_improve = 0
+
     for epoch in range(epochs):
+        # ---- Train ----
         model.train()
         total_train_loss = 0.0
         for x, y in train_loader:
@@ -266,15 +273,15 @@ def train_ctcf_model(
             if num_outputs == 1:
                 loss = loss_fn(logits.squeeze(1), y.squeeze(1))
             elif isinstance(loss_fn, nn.KLDivLoss):
-                loss = loss_fn(F.log_softmax(logits, dim=1), y)          # y are probs
+                loss = loss_fn(F.log_softmax(logits, dim=1), y)   # y are probs if KLDiv
             else:
-                loss = loss_fn(logits, torch.argmax(y, dim=1))           # y are one-hot
+                loss = loss_fn(logits, torch.argmax(y, dim=1))    # y are one-hot for CE
 
             loss.backward()
             optimizer.step()
             total_train_loss += loss.item()
 
-        # val
+        # ---- Validate ----
         model.eval()
         total_val_loss = 0.0
         with torch.no_grad():
@@ -289,7 +296,27 @@ def train_ctcf_model(
                     vloss = loss_fn(logits, torch.argmax(y, dim=1))
                 total_val_loss += vloss.item()
 
-        print(f"Epoch {epoch+1}/{epochs} | Train {total_train_loss/len(train_loader):.4f} | Val {total_val_loss/len(val_loader):.4f}")
+        avg_train = total_train_loss / max(1, len(train_loader))
+        avg_val   = total_val_loss / max(1, len(val_loader))
+        print(f"Epoch {epoch+1}/{epochs} | Train {avg_train:.4f} | Val {avg_val:.4f}")
+
+        # ---- Early stopping check ----
+        if early_stopping:
+            if avg_val < best_val - min_delta:
+                best_val = avg_val
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
+                if no_improve >= patience:
+                    print(f"⏹️ Early stopping at epoch {epoch+1} "
+                          f"(no improvement ≥ {min_delta} for {patience} epochs).")
+                    break
+
+    # restore best weights if requested
+    if restore_best and best_state is not None:
+        model.load_state_dict(best_state)
+        print(f"🔙 Restored best model (Val {best_val:.4f}).")
 
     # save
     os.makedirs(os.path.dirname(save_weights_path), exist_ok=True)
