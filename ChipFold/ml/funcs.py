@@ -130,7 +130,7 @@ def predict_ctcf_occupancy(
     out_features=3,               # set to 1 for single-output models
     pred_device='cpu',
     label_cols=None,              # << pass your labels here; we'll use 'predicted_<label>'
-    bound_index=1                 # optional: which class to expose as 'predicted_bound_prob'
+    bound_index=1,                 # optional: which class to expose as 'predicted_bound_prob'
     class_names=None,             # fallback names if label_cols not given
 ):
     """
