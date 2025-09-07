@@ -128,10 +128,10 @@ def predict_ctcf_occupancy(
     ctcfpfm='data/MA0139.1.pfm',
     model_weights_path='data/model_weights.pt',
     out_features=3,               # set to 1 for single-output models
-    pred_device=None,
+    pred_device='cpu',
     label_cols=None,              # << pass your labels here; we'll use 'predicted_<label>'
-    class_names=None,             # fallback names if label_cols not given
     bound_index=1                 # optional: which class to expose as 'predicted_bound_prob'
+    class_names=None,             # fallback names if label_cols not given
 ):
     """
     Writes columns named 'predicted_<label>' for each output.
