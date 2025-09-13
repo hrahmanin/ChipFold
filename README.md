@@ -1,8 +1,7 @@
-# 🧬 OccuFold
+# 🧬 EnformerBindPredict
 
 
 
-### Description
 ### Description
 This repository provides a reproducible Nextflow (DSL2) pipeline for predicting CTCF occupancy from multi-omic data. The workflow automates:
 
@@ -12,11 +11,7 @@ This repository provides a reproducible Nextflow (DSL2) pipeline for predicting 
 4. **Simulation inputs** – exports genome-wide occupancy tracks, barrier lists, and parameter dictionaries for loop-extrusion simulations.  
 
 The entire workflow runs inside Singularity/Apptainer containers for consistent, portable execution across HPC and cloud environments.
-
-
 ![Workflow Figure](figures/Demo.png)
-
-
 <!--### Structure of the repository
 The structure of this repository follows as below:
 - processing/: Scripts and pipelines for NGS data processing (e.g., handling SMF methylation footprint data and ChIP-seq data).
