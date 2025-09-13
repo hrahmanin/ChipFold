@@ -30,11 +30,15 @@ Required files:
 
 - Reference genome FASTA (e.g., mm10.fa) and index in a readable location
 
+- ATAC-seq data (paired-end FASTQ or processed fragment file)
+
+- CTCF PFM file (e.g., workflow/files/MA0139.1.pfm or .smooth.pfm)
+
 - CTCF peaks BED/CSV/TSV (first 3 columns = chrom,start,end)
 
 - Model weights file (see workflow/files/model_weights)
 
-- CTCF PFM file (e.g., workflow/files/MA0139.1.pfm or .smooth.pfm)
+
 
 ### Install & Run (quick start)
 
