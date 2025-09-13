@@ -3,7 +3,16 @@
 
 
 ### Description
-This repository contains a reproducible Nextflow (DSL2) pipeline that uses a neural-network model to predict CTCF occupancy (Convolutional Neural Network) from SMF/motif data and then prepares the inputs for loop-extrusion simulations to validate those predictions. It keeps key region fields, writes an occupancy track, and produces barrier lists plus a paramdict for simulations. The whole pipeline runs in a Singularity/Apptainer container for consistent, portable results.
+### Description
+This repository provides a reproducible Nextflow (DSL2) pipeline for predicting CTCF occupancy from multi-omic data. The workflow automates:
+
+1. **Data processing** – fetches and processes raw ChIP-seq/ATAC-seq data (sra-tools, alignment, QC, peak calling, filtering).  
+2. **Feature preparation** – integrates ATAC-seq accessibility, ChIP-seq signal, and DNA sequence.  
+3. **Modeling** – trains and applies a hybrid CNN–Enformer model to predict CTCF occupancy rates.  
+4. **Simulation inputs** – exports genome-wide occupancy tracks, barrier lists, and parameter dictionaries for loop-extrusion simulations.  
+
+The entire workflow runs inside Singularity/Apptainer containers for consistent, portable execution across HPC and cloud environments.
+
 
 ![Workflow Figure](figures/Demo.png)
 
