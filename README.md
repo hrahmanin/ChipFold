@@ -86,11 +86,15 @@ If you don't have peaks, you can DROP the --peaks line.
 
 ---
 **Outputs**
-- **Step 1:** `results/step1/REGION.csv` — region table (e.g., `chrom,start,end,mid,strand,...`).
-- **Step 2:** `results/step2/REGION.occupancy.csv` — Step-1 columns **plus** model outputs (e.g., `Accessible,Bound,Nucleosome.occupied`).
-- **Step 3:** `results/step3/REGION.occupancy.refined_occupancy.csv`, `barriers.csv`, `ctcf_lists.csv`, `paramdict.json`.
-- **Step 4:** `results/step4/REGION.1d_sims`
-- **Step 5:** `results/step5/Chip.png, Hi-C.png`
+- **Step 1:** `results/step1/fastqc/` — The raw FASTQ data from SRA libraries (NCBI) and quality check reports (FastQC, MultiQC).  
+- **Step 2:** `results/step2/alignment/` — aligned reads in BAM format plus indexes/metrics (Bowtie2/BWA, samtools, Picard).  
+- **Step 3:** `results/step3/peaks/` — The process of calling peaks, coverage tracks, and signal bigWigs form (MACS2, bedtools).  
+- **Step 4:** `results/step4/REGION.csv` — processed region table extracted from ChIP/ATAC-seq peaks (e.g., `chrom,start,end,mid,strand,...`).  
+- **Step 5:** `results/step5/REGION.occupancy.csv` — Step-4 columns **plus** hybrid CNN–Enformer model predictions (`Accessible,Bound,Nucleosome.occupied`).  
+- **Step 6:** `results/step6/REGION.occupancy.refined_occupancy.csv`, `barriers.csv`, `ctcf_lists.csv`, `paramdict.json` — refined occupancy tracks and simulation-ready barrier inputs.  
+- **Step 7:** `results/step7/REGION.1d_sims/` — loop-extrusion 1D simulations from predicted barriers/occupancy.  
+- **Step 8:** `results/step8/Chip.png, Hi-C.png` — final visualizations of ChIP/ATAC signal tracks and simulated Hi-C contact maps.  
+
 
 <!--#### 📁 Output
 
