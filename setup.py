@@ -3,7 +3,7 @@ import io
 from setuptools import setup, find_packages
 
 VERSION = "0.1.0"
-DESCRIPTION = "Locus-specific barriers for loop extrusion simulations"
+DESCRIPTION = "Locus-specific barrier prediction for loop extrusion simulations"
 
 
 def _read(*parts, **kwargs):
