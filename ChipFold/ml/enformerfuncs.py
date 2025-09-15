@@ -11,7 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
 
-from .enformer_cnn_hybrid import EnformerCNNHybrid
+from .enformer_cnn_model import EnformerCNNHybrid
 
 torch.manual_seed(2024)
 
