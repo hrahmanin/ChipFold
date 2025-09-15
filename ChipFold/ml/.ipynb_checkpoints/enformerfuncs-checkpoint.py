@@ -137,25 +137,32 @@ def build_per_chrom_index(df):
     return idx
 
 def nearest_neighbors_for_row(chrom, mid, chrom_index, K=8, window_kb=250.0, self_row=None):
-    mids = chrom_index['mids']
-    rows = chrom_index['rows']
+    # Guard: chromosome might not exist (shouldn't happen, but be safe)
+    if chrom not in chrom_index:
+        return np.array([], dtype=int), np.array([], dtype=int)
+
+    mids = chrom_index[chrom]['mids']
+    rows = chrom_index[chrom]['rows']
+
     # all candidates within window
     dists = mids - mid
     mask = np.abs(dists) <= int(window_kb * 1000)
     cand_rows = rows[mask]
     cand_dists = dists[mask]
+
     # drop self if present
-    if self_row is not None and self_row in cand_rows:
+    if self_row is not None and cand_rows.size:
         keep = cand_rows != self_row
         cand_rows = cand_rows[keep]
         cand_dists = cand_dists[keep]
+
     if cand_rows.size == 0:
         return np.array([], dtype=int), np.array([], dtype=int)
 
     # take K nearest by absolute distance
-    order = np.argsort(np.abs(cand_dists), kind="mergesort")
-    order = order[:K]
+    order = np.argsort(np.abs(cand_dists), kind="mergesort")[:K]
     return cand_rows[order], cand_dists[order]
+
 
 
 def neighbor_features_from_df(df, row_i, chrom_index, ctcf_pwm, ctcf_pwm_rc,
