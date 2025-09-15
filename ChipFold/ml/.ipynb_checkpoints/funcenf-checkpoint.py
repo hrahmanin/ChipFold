@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
 import matplotlib.pyplot as plt
 
-from cnn_model import FlankCoreModel, HybridCTCFModel  # keep old, add new
+from .enformer_cnn_model import FlankCoreModel, HybridCTCFModel  # keep old, add new
 
 torch.manual_seed(2024)
 np.random.seed(2024)
