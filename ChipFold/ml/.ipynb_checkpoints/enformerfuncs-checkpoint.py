@@ -11,17 +11,24 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
 
-from .enformer_cnn_model import EnformerCNNHybrid
+from .enformer_cnn_hybrid import EnformerCNNHybrid
 
 torch.manual_seed(2024)
 
 
-# -------------------- sequence utils (copied/simplified to avoid circular imports) --------------------
+# -------------------- sequence + PWM utils (safe) --------------------
 
-def pfm_to_pwm(pfm, background_frequency=0.25):
-    s = pfm.sum(axis=0)
-    pwm = np.log((pfm / s) / background_frequency)
+def pfm_to_pwm(pfm, background_frequency=0.25, pseudocount=0.5, eps=1e-8):
+    """
+    Safe PWM: add pseudocounts, normalize columns, avoid log(0).
+    Returns natural-log odds.
+    """
+    pfm = pfm.astype(np.float64) + pseudocount
+    col_sums = pfm.sum(axis=0, keepdims=True)
+    freqs = pfm / (col_sums + eps)
+    pwm = np.log((freqs + eps) / max(background_frequency, eps))
     return pwm
+
 
 def dna_1hot(seq, seq_len=None, n_uniform=False, n_sample=False):
     if seq_len is None:
@@ -52,21 +59,35 @@ def dna_1hot(seq, seq_len=None, n_uniform=False, n_sample=False):
                     seq_code[i, ni] = 1
     return seq_code
 
+
 def scan_sequence(pwm, pwm_rc, seq_1hot_T):  # seq_1hot_T: (4,L)
+    """
+    Returns (orient, motif_start_idx, strength) with clamped finite strength.
+    orient: +1 forward, -1 reverse
+    """
     k = pwm.shape[1]
     L = seq_1hot_T.shape[1]
-    scores = np.array([
-        np.nansum((pwm * seq_1hot_T[:, i:i+k])) for i in range(L - k + 1)
-    ])
-    scores_rc = np.array([
-        np.nansum((pwm_rc * seq_1hot_T[:, i:i+k])) for i in range(L - k + 1)
-    ])
-    i_f = int(scores.argmax())
-    i_r = int(scores_rc.argmax())
+    scores = np.array(
+        [np.nansum(pwm * seq_1hot_T[:, i:i+k]) for i in range(L - k + 1)],
+        dtype=np.float64
+    )
+    scores_rc = np.array(
+        [np.nansum(pwm_rc * seq_1hot_T[:, i:i+k]) for i in range(L - k + 1)],
+        dtype=np.float64
+    )
+    # make finite
+    scores = np.nan_to_num(scores, nan=0.0, posinf=1e6, neginf=-1e6)
+    scores_rc = np.nan_to_num(scores_rc, nan=0.0, posinf=1e6, neginf=-1e6)
+
+    i_f = int(np.argmax(scores))
+    i_r = int(np.argmax(scores_rc))
     if scores[i_f] >= scores_rc[i_r]:
-        return +1, i_f, float(scores[i_f])     # +1 forward
+        strength = float(np.clip(scores[i_f], -1e4, 1e4))
+        return +1, i_f, strength
     else:
-        return -1, i_r, float(scores_rc[i_r])  # -1 reverse
+        strength = float(np.clip(scores_rc[i_r], -1e4, 1e4))
+        return -1, i_r, strength
+
 
 def fetch_and_orient_from_fasta(
     bedfile,
@@ -75,47 +96,50 @@ def fetch_and_orient_from_fasta(
     flanking_bp=15,
     core_bp=19
 ):
+    """
+    For each row in bedfile (first 3 cols chrom,start,end), center on best motif,
+    extract (4, 2*flanking_bp+core_bp), orient forward.
+    Returns: seqs (N,4,L2), seq_len (L2), target_orients (N,), mids (N,)
+    """
     df = pd.read_csv(bedfile, sep=None, engine='python', comment='#')
-    peaks_table = df.iloc[:, :3].copy()  # chrom,start,end
+    peaks_table = df.iloc[:, :3].copy()
     ref_genome = pysam.FastaFile(ref_genome_filepath)
 
     ctcf_pfm = np.loadtxt(ctcfpfm, skiprows=1)
     ctcf_pwm = pfm_to_pwm(ctcf_pfm)
     ctcf_pwm_rc = pfm_to_pwm(np.flip(np.flip(ctcf_pfm, axis=0), axis=1))
 
-    seqs = []
-    dirs = []
-    mids = []
+    seqs, dirs, mids = [], [], []
     for _, row in peaks_table.iterrows():
         chrom, start, end = row[['chrom', 'start', 'end']]
         start = int(start); end = int(end)
         mids.append((start + end) // 2)
 
         seq = dna_1hot(ref_genome.fetch(chrom, start, end+1)).T  # (4,L)
-        orient, motif_i, motif_score = scan_sequence(ctcf_pwm, ctcf_pwm_rc, seq)
+        orient, motif_i, _ = scan_sequence(ctcf_pwm, ctcf_pwm_rc, seq)
 
         left  = start + motif_i - flanking_bp
         right = start + motif_i + flanking_bp + core_bp
-        sub = dna_1hot(ref_genome.fetch(chrom, left, right)).T   # (4, 2*flank+core)
+        sub = dna_1hot(ref_genome.fetch(chrom, left, right)).T   # (4,L2)
 
         if orient == -1:
-            sub = np.flip(sub, axis=0)  # reverse complement orientation
+            sub = np.flip(sub, axis=0)
             sub = np.flip(sub, axis=1)
 
         dirs.append(orient)
         seqs.append(sub)
 
-    seqs = np.array(seqs)               # (N,4,L2)
+    seqs = np.array(seqs)
     seq_len = seqs.shape[-1]
     return seqs, seq_len, np.array(dirs, dtype=np.int8), np.array(mids, dtype=np.int64)
 
 
-# -------------------- neighbor feature utils --------------------
+# -------------------- neighbor indexing + features --------------------
 
 def fourier_features(x, n_freq=8, min_period=1.0, max_period=200.0):
     """
     x: numpy array of distances in kb (absolute), shape (...,)
-    Returns sin/cos features of shape (..., 2*n_freq) with log-spaced periods [min, max] kb.
+    Returns features (..., 2*n_freq) using log-spaced periods.
     """
     periods = np.logspace(np.log10(min_period), np.log10(max_period), num=n_freq)
     feats = []
@@ -125,32 +149,34 @@ def fourier_features(x, n_freq=8, min_period=1.0, max_period=200.0):
         feats.append(np.cos(w * x))
     return np.stack(feats, axis=-1)  # (..., 2*n_freq)
 
+
 def build_per_chrom_index(df):
+    """
+    Returns dict: chrom -> {'mids': array[int], 'rows': array[int]}
+    """
     idx = {}
     for chrom, sub in df.groupby('chrom', sort=False):
         arr = sub[['start', 'end']].to_numpy(dtype=np.int64)
-        mids = ((arr[:,0] + arr[:,1]) // 2)
-        idx[chrom] = {
-            'mids': mids,
-            'rows': sub.index.to_numpy()
-        }
+        mids = ((arr[:, 0] + arr[:, 1]) // 2)
+        idx[chrom] = {'mids': mids, 'rows': sub.index.to_numpy()}
     return idx
 
+
 def nearest_neighbors_for_row(chrom, mid, chrom_index, K=8, window_kb=250.0, self_row=None):
-    # Guard: chromosome might not exist (shouldn't happen, but be safe)
+    """
+    Returns (neighbor_row_indices, distances_bp) for the K nearest within window.
+    """
     if chrom not in chrom_index:
         return np.array([], dtype=int), np.array([], dtype=int)
 
     mids = chrom_index[chrom]['mids']
     rows = chrom_index[chrom]['rows']
 
-    # all candidates within window
     dists = mids - mid
     mask = np.abs(dists) <= int(window_kb * 1000)
     cand_rows = rows[mask]
     cand_dists = dists[mask]
 
-    # drop self if present
     if self_row is not None and cand_rows.size:
         keep = cand_rows != self_row
         cand_rows = cand_rows[keep]
@@ -159,23 +185,23 @@ def nearest_neighbors_for_row(chrom, mid, chrom_index, K=8, window_kb=250.0, sel
     if cand_rows.size == 0:
         return np.array([], dtype=int), np.array([], dtype=int)
 
-    # take K nearest by absolute distance
     order = np.argsort(np.abs(cand_dists), kind="mergesort")[:K]
     return cand_rows[order], cand_dists[order]
-
 
 
 def neighbor_features_from_df(df, row_i, chrom_index, ctcf_pwm, ctcf_pwm_rc,
                               K=8, window_kb=250.0, ref_fasta=None,
                               use_seq_col_if_available=True):
     """
-    Build neighbor features for one row.
+    Build neighbor features for row_i.
+
+    Feature vector per neighbor (F):
+      [Fourier(|dist_kb|) (16), dist_sign (1), target_orient (1),
+       neigh_orient (1), neigh_strength (1)]  -> F = 20
+
     Returns:
       feats: (K, F) float32
-      mask:  (K,) bool (True means PAD)
-    Feature set F:
-      [ Fourier(|dist_kb|, 2*n_freq), dist_sign, target_orient, neigh_orient,
-        neigh_strength ]
+      mask:  (K,) bool  (True = PAD / ignore in attention)
     """
     row = df.iloc[row_i]
     chrom = row['chrom']; start = int(row['start']); end = int(row['end'])
@@ -185,25 +211,29 @@ def neighbor_features_from_df(df, row_i, chrom_index, ctcf_pwm, ctcf_pwm_rc,
         chrom, mid, chrom_index, K=K, window_kb=window_kb, self_row=row_i
     )
 
-    # target orientation
+    # Target orientation
     if use_seq_col_if_available and 'sequence' in df.columns and isinstance(row['sequence'], str):
         seq_T = dna_1hot(row['sequence']).T
         t_orient, _, _ = scan_sequence(ctcf_pwm, ctcf_pwm_rc, seq_T)
     else:
-        # fetch minimal window from fasta
         assert ref_fasta is not None, "ref_fasta required if no 'sequence' column"
         fasta = pysam.FastaFile(ref_fasta)
         seq_T = dna_1hot(fasta.fetch(chrom, start, end+1)).T
         t_orient, _, _ = scan_sequence(ctcf_pwm, ctcf_pwm_rc, seq_T)
 
+    # If no neighbors, return all-PAD zeros
+    if neigh_rows.size == 0:
+        Fdim = 2*8 + 4
+        feats = np.zeros((K, Fdim), dtype='float32')
+        mask = np.ones((K,), dtype=bool)
+        return feats, mask
+
     feats = []
-    pad = K - len(neigh_rows)
-    # build actual neighbor feature rows
     for j, dist_bp in zip(neigh_rows, neigh_dists_bp):
         nrow = df.iloc[j]
         n_chrom = nrow['chrom']; n_start = int(nrow['start']); n_end = int(nrow['end'])
 
-        # neighbor orientation & strength
+        # orientation & strength of neighbor
         if use_seq_col_if_available and 'sequence' in df.columns and isinstance(nrow['sequence'], str):
             n_seq_T = dna_1hot(nrow['sequence']).T
             n_orient, _, n_strength = scan_sequence(ctcf_pwm, ctcf_pwm_rc, n_seq_T)
@@ -213,24 +243,30 @@ def neighbor_features_from_df(df, row_i, chrom_index, ctcf_pwm, ctcf_pwm_rc,
             n_seq_T = dna_1hot(fasta.fetch(n_chrom, n_start, n_end+1)).T
             n_orient, _, n_strength = scan_sequence(ctcf_pwm, ctcf_pwm_rc, n_seq_T)
 
-        dist_kb = dist_bp / 1000.0
-        ff = fourier_features(np.array([abs(dist_kb)], dtype=float), n_freq=8,
-                              min_period=1.0, max_period=200.0).reshape(-1)  # (16,)
+        n_strength = float(np.clip(n_strength, -100.0, 100.0))
+        dist_kb = float(dist_bp) / 1000.0
+        if not np.isfinite(dist_kb):
+            dist_kb = 0.0
+
+        ff = fourier_features(np.array([abs(dist_kb)], dtype=float),
+                              n_freq=8, min_period=1.0, max_period=200.0).reshape(-1)  # (16,)
         sign = np.sign(dist_kb)  # -1 (left) or +1 (right)
         feat = np.concatenate([
             ff, np.array([sign, float(t_orient), float(n_orient), float(n_strength)], dtype=float)
         ], axis=0)
         feats.append(feat.astype('float32'))
 
-    # pad with zeros if < K neighbors
-    if pad > 0:
-        Fdim = feats[0].shape[0] if feats else (2*8 + 4)   # default if no neighbors at all
-        feats += [np.zeros((Fdim,), dtype='float32')] * pad
+    # pad to K
+    if len(feats) < K:
+        Fdim = feats[0].shape[0]
+        feats += [np.zeros((Fdim,), dtype='float32')] * (K - len(feats))
 
     feats = np.stack(feats, axis=0) if len(feats) else np.zeros((K, 2*8+4), dtype='float32')
+    feats = np.nan_to_num(feats, nan=0.0, posinf=0.0, neginf=0.0)
+
     mask = np.zeros((K,), dtype=bool)
-    if pad > 0:
-        mask[-pad:] = True
+    if len(neigh_rows) < K:
+        mask[len(neigh_rows):] = True  # mark padded rows as PAD
     return feats, mask
 
 
@@ -244,31 +280,27 @@ class HybridCTCFOccupancyDataset(Dataset):
                  flanking_bp=15, core_bp=19,
                  K=8, window_kb=250.0):
         """
-        Produces: (x_seq: (4,L), neigh_feats: (K,F), neigh_mask: (K,), y: (C,))
+        Yields tuples: (x_seq: (4,L), neigh_feats: (K,F), neigh_mask: (K,), y: (C,))
         """
         self.df = pd.read_csv(bedfile_path, sep=None, engine='python', comment='#')
-        # keep rows with all labels present
         self.df = self.df[self.df[label_cols].notnull().all(axis=1)].reset_index(drop=True)
         self.y = self.df[label_cols].values.astype('float32')
         self.label_cols = label_cols
 
-        # sequences oriented around CTCF motif
         self.seqs, self.seq_len, self.target_orients, self.mids = fetch_and_orient_from_fasta(
             bedfile_path, ref_genome_fasta, ctcfpfm, flanking_bp=flanking_bp, core_bp=core_bp
         )
 
-        # motif PWMs
         ctcf_pfm = np.loadtxt(ctcfpfm, skiprows=1)
         self.ctcf_pwm = pfm_to_pwm(ctcf_pfm)
         self.ctcf_pwm_rc = pfm_to_pwm(np.flip(np.flip(ctcf_pfm, axis=0), axis=1))
 
-        # neighbor index
         self.chrom_index = build_per_chrom_index(self.df)
         self.K = K
         self.window_kb = window_kb
         self.ref_genome_fasta = ref_genome_fasta
 
-        # Peek a single neighbor vector to freeze F dim
+        # establish feature dim
         feats0, _ = neighbor_features_from_df(
             self.df, 0, self.chrom_index, self.ctcf_pwm, self.ctcf_pwm_rc,
             K=self.K, window_kb=self.window_kb, ref_fasta=self.ref_genome_fasta
@@ -279,28 +311,33 @@ class HybridCTCFOccupancyDataset(Dataset):
         return len(self.df)
 
     def __getitem__(self, idx):
-        x = torch.tensor(self.seqs[idx], dtype=torch.float32)                 # (4,L)
+        x = torch.tensor(self.seqs[idx], dtype=torch.float32)  # (4,L)
         feats, mask = neighbor_features_from_df(
             self.df, idx, self.chrom_index, self.ctcf_pwm, self.ctcf_pwm_rc,
             K=self.K, window_kb=self.window_kb, ref_fasta=self.ref_genome_fasta
         )
-        nf = torch.tensor(feats, dtype=torch.float32)                         # (K,F)
-        nm = torch.tensor(mask, dtype=torch.bool)                             # (K,)
-        y = torch.tensor(self.y[idx], dtype=torch.float32)                    # (C,)
+        nf = torch.tensor(feats, dtype=torch.float32)          # (K,F)
+        nm = torch.tensor(mask, dtype=torch.bool)              # (K,)
+        y = torch.tensor(self.y[idx], dtype=torch.float32)     # (C,)
+        # final safety
+        x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+        nf = torch.nan_to_num(nf, nan=0.0, posinf=0.0, neginf=0.0)
+        y = torch.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
         return x, nf, nm, y
 
 
-# -------------------- Train / Predict --------------------
+# -------------------- Loss, metrics, train, predict --------------------
 
 def _choose_loss(num_outputs, use_kldiv):
     if num_outputs == 1:
         return nn.BCEWithLogitsLoss()
     return nn.KLDivLoss(reduction='batchmean') if use_kldiv else nn.CrossEntropyLoss()
 
+
 @torch.no_grad()
 def _epoch_metrics(logits, y, loss_fn):
     if logits.shape[1] == 1:
-        # binary/regression-like — compute Pearson r as a sanity metric
+        # Pearson r for single-output
         y_true = y.squeeze(1).cpu()
         y_pred = torch.sigmoid(logits.squeeze(1)).cpu()
         yt = y_true - y_true.mean()
@@ -309,11 +346,12 @@ def _epoch_metrics(logits, y, loss_fn):
         pearson = (yt * yp).sum() / denom
         return float(pearson.item())
     else:
-        # multi-class — compute accuracy
+        # accuracy for multi-class
         y_true = torch.argmax(y, dim=1).cpu()
         y_pred = torch.argmax(logits, dim=1).cpu()
         acc = (y_true == y_pred).float().mean()
         return float(acc.item())
+
 
 def train_hybrid_model(
     bedfile_path,
@@ -335,14 +373,12 @@ def train_hybrid_model(
     num_outputs = ds.y.shape[1]
     seq_len = ds.seq_len
 
-    # split
     n_train = int(0.8 * len(ds))
     n_val = len(ds) - n_train
     tr, va = random_split(ds, [n_train, n_val], generator=torch.Generator().manual_seed(42))
     tr_loader = DataLoader(tr, batch_size=batch_size, shuffle=True)
     va_loader = DataLoader(va, batch_size=batch_size, shuffle=False)
 
-    # model
     model = EnformerCNNHybrid(
         seq_len=seq_len, d_model=128, n_heads=4, out_features=num_outputs,
         neighbor_feat_dim=ds.neigh_feat_dim, dropout=0.1
@@ -358,7 +394,8 @@ def train_hybrid_model(
     for ep in range(1, epochs+1):
         # ---- train ----
         model.train()
-        tr_loss = 0.0
+        tr_loss_sum = 0.0
+        tr_batches = 0
         for x, nf, nm, y in tr_loader:
             x, nf, nm, y = x.to(dev), nf.to(dev), nm.to(dev), y.to(dev)
             opt.zero_grad()
@@ -369,35 +406,49 @@ def train_hybrid_model(
                 loss = loss_fn(F.log_softmax(logits, dim=1), y)
             else:
                 loss = loss_fn(logits, torch.argmax(y, dim=1))
+
+            if not torch.isfinite(loss):
+                print("⚠️ Non-finite train loss encountered; skipping batch.")
+                continue
+
             loss.backward()
             opt.step()
-            tr_loss += loss.item()
-        tr_loss /= max(1, len(tr_loader))
+            tr_loss_sum += float(loss.item())
+            tr_batches += 1
+
+        tr_loss = tr_loss_sum / max(1, tr_batches)
 
         # ---- validate ----
         model.eval()
-        va_loss = 0.0
+        va_loss_sum = 0.0
+        va_batches = 0
         metric_vals = []
         with torch.no_grad():
             for x, nf, nm, y in va_loader:
                 x, nf, nm, y = x.to(dev), nf.to(dev), nm.to(dev), y.to(dev)
                 logits = model(x, nf, nm)
+
                 if num_outputs == 1:
                     l = loss_fn(logits.squeeze(1), y.squeeze(1))
                 elif isinstance(loss_fn, nn.KLDivLoss):
                     l = loss_fn(F.log_softmax(logits, dim=1), y)
                 else:
                     l = loss_fn(logits, torch.argmax(y, dim=1))
-                va_loss += l.item()
-                metric_vals.append(_epoch_metrics(logits, y, loss_fn))
-        va_loss /= max(1, len(va_loader))
-        metric = float(np.mean(metric_vals)) if metric_vals else float('nan')
 
-        # metric name for print
+                if not torch.isfinite(l):
+                    print("⚠️ Non-finite val loss encountered; skipping batch.")
+                    continue
+
+                va_loss_sum += float(l.item())
+                va_batches += 1
+                metric_vals.append(_epoch_metrics(logits, y, loss_fn))
+
+        va_loss = va_loss_sum / max(1, va_batches)
+        metric = float(np.mean(metric_vals)) if metric_vals else float('nan')
         mname = "Pearson(r)" if num_outputs == 1 else "Acc"
         print(f"Epoch {ep:02d}/{epochs} | Train {tr_loss:.4f} | Val {va_loss:.4f} | {mname} {metric:.3f}")
 
-        # early stop
+        # early stopping
         if early_stopping:
             if va_loss < best_val - min_delta:
                 best_val = va_loss
@@ -433,7 +484,6 @@ def predict_hybrid(
 ):
     dev = device_override or ('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # build a dataset to get shapes and neighbor features
     ds = HybridCTCFOccupancyDataset(
         bedfile_path, label_cols=label_cols,
         ref_genome_fasta=ref_genome_fasta, ctcfpfm=ctcfpfm,
