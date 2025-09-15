@@ -2,7 +2,7 @@
 import torch
 from torch.utils.data import DataLoader
 from torch.optim import Adam
-from cnn_enformer_hybrid import CNNEnformerHybrid
+from .cnn_enformer_hybrid import CNNEnformerHybrid
 
 def _collate_with_neighbor_padding(batch):
     # batch: list of (seq[L,4], neighbors[K,L,4], y[...])
