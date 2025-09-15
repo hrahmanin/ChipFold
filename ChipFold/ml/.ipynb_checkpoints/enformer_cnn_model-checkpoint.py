@@ -119,34 +119,34 @@ class EnformerCNNHybrid(nn.Module):
         )
 
     def forward(self, x_seq, neigh_feats=None, neigh_mask=None):
-    tgt = self.local(x_seq)                     # (B,D)
-
-    if self.nei is None or neigh_feats is None:
-        context = tgt
-    else:
-        kv = self.nei(neigh_feats)              # (B,K,D)
-
-        # If ALL neighbors are masked for a sample, fall back to self-context.
-        if neigh_mask is not None:
-            # neigh_mask: True = ignore
-            has_any = (~neigh_mask).any(dim=1)  # (B,)
-            # For rows with no neighbors, make a single unmasked dummy "neighbor" = tgt
-            if not has_any.all():
-                kv = kv.clone()
-                mask = neigh_mask.clone()
-                idx = (~has_any).nonzero(as_tuple=False).squeeze(-1)  # rows with all True
-                if idx.numel() > 0:
-                    kv[idx, 0, :] = tgt[idx]      # first token becomes tgt
-                    mask[idx, :] = True           # mask all
-                    mask[idx, 0] = False          # ...except the first
-                neigh_mask = mask
-
-        q = tgt.unsqueeze(1)                    # (B,1,D)
-        context = self.cross(q, kv, key_padding_mask=neigh_mask)  # (B,D)
-
-    fused = torch.cat([tgt, context], dim=1)    # (B,2D)
-    logits = self.classifier(fused)             # (B,C)
-    return logits
+        tgt = self.local(x_seq)                     # (B,D)
+    
+        if self.nei is None or neigh_feats is None:
+            context = tgt
+        else:
+            kv = self.nei(neigh_feats)              # (B,K,D)
+    
+            # If ALL neighbors are masked for a sample, fall back to self-context.
+            if neigh_mask is not None:
+                # neigh_mask: True = ignore
+                has_any = (~neigh_mask).any(dim=1)  # (B,)
+                # For rows with no neighbors, make a single unmasked dummy "neighbor" = tgt
+                if not has_any.all():
+                    kv = kv.clone()
+                    mask = neigh_mask.clone()
+                    idx = (~has_any).nonzero(as_tuple=False).squeeze(-1)  # rows with all True
+                    if idx.numel() > 0:
+                        kv[idx, 0, :] = tgt[idx]      # first token becomes tgt
+                        mask[idx, :] = True           # mask all
+                        mask[idx, 0] = False          # ...except the first
+                    neigh_mask = mask
+    
+            q = tgt.unsqueeze(1)                    # (B,1,D)
+            context = self.cross(q, kv, key_padding_mask=neigh_mask)  # (B,D)
+    
+        fused = torch.cat([tgt, context], dim=1)    # (B,2D)
+        logits = self.classifier(fused)             # (B,C)
+        return logits
 
     #def forward(self, x_seq, neigh_feats=None, neigh_mask=None):
     #    tgt = self.local(x_seq)                     # (B,D)
