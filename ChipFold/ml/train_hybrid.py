@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from torch.optim import Adam
-from cnn_enformer_hybrid import CNNEnformerHybrid
+from .cnn_enformer_hybrid import CNNEnformerHybrid
 
 def train_model(train_ds, val_ds, label_cols, epochs=25, patience=10, lr=1e-3, device="cuda"):
     train_loader = DataLoader(train_ds, batch_size=32, shuffle=True)

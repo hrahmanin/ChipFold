@@ -1,7 +1,7 @@
 import torch
 import pandas as pd
 from torch.utils.data import DataLoader
-from cnn_enformer_hybrid import CNNEnformerHybrid
+from .cnn_enformer_hybrid import CNNEnformerHybrid
 
 def predict_model(test_ds, label_cols, weights_path="hybrid_best.pt", device="cuda"):
     loader = DataLoader(test_ds, batch_size=32)
