@@ -14,7 +14,7 @@ class NeighborSeqDataset(Dataset):
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
         seq = self.seq_to_onehot(row["sequence"])
-        y = torch.tensor(row[self.label_cols].values, dtype=torch.float32)
+        y = torch.tensor(row[self.label_cols].astype(float).values, dtype=torch.float32)
 
         neighbors = []
         for nb in self.neighbor_map.get(idx, []):
