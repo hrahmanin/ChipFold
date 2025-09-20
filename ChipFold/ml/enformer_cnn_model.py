@@ -114,7 +114,7 @@ class EnformerCNNHybrid(nn.Module):
             nn.Linear(2 * d_model, d_model),
             nn.ReLU(inplace=True),
             nn.Dropout(dropout),
-            nn.LayerNorm(d_model),
+            #nn.LayerNorm(d_model),
             nn.Linear(d_model, out_features)
         )
 
