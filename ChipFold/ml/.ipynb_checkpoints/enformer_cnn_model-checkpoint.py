@@ -37,7 +37,7 @@ class LocalCNNEncoder(nn.Module):
         self.proj = nn.Sequential(
             nn.Linear(d_embed3, d_model),
             nn.ReLU(inplace=True),
-            nn.LayerNorm(d_model)
+            #nn.LayerNorm(d_model)
         )
 
     def forward(self, x):               # x: (B,4,L)
