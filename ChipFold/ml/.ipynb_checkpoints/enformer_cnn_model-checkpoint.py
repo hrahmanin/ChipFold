@@ -88,7 +88,7 @@ class NeighborFeatureEmbedder(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(in_features, d_model),
             nn.ReLU(inplace=True),
-            nn.LayerNorm(d_model)
+           # nn.LayerNorm(d_model)
         )
 
     def forward(self, feats):
